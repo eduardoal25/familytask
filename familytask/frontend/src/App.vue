@@ -5,29 +5,59 @@ const status = ref('...')
 const newTask = ref('')
 const tasks = ref([])
 
-function addTask() {
-  const taskTitle = newTask.value.trim()
+async function loadTasks() {
+  const response = await fetch('/api/tasks')
+  if (!response.ok) {
+    throw new Error('Unable to load tasks')
+  }
+  tasks.value = await response.json()
+}
 
-  if (!taskTitle) {
+async function addTask() {
+  const title = newTask.value.trim()
+
+  if (!title) {
     return
   }
 
-  tasks.value.push({
-    id: Date.now(),
-    taskTitle,
-    done: false
+  const response = await fetch('/api/tasks', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title, done: false })
   })
+  if (!response.ok) {
+    throw new Error('Unable to create task')
+  }
 
+  tasks.value.push(await response.json())
   newTask.value = ''
 }
 
-function toggleDone(id) {
-  tasks.value = tasks.value.map(task =>
-    task.id === id ? { ...task, done: !task.done } : task
+async function toggleDone(task) {
+  const response = await fetch(`/api/tasks/${task.id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      title: task.title,
+      done: !task.done
+    })
+  })
+  if (!response.ok) {
+    throw new Error('Unable to update task')
+  }
+
+  const updatedTask = await response.json()
+  tasks.value = tasks.value.map(currentTask =>
+    currentTask.id === updatedTask.id ? updatedTask : currentTask
   )
 }
 
-function deleteTask(id) {
+async function deleteTask(id) {
+  const response = await fetch(`/api/tasks/${id}`, { method: 'DELETE' })
+  if (!response.ok) {
+    throw new Error('Unable to delete task')
+  }
+
   tasks.value = tasks.value.filter(task => task.id !== id)
 }
 
@@ -39,11 +69,11 @@ onMounted(async () => {
     status.value = 'back pas encore prêt'
   }
 
-  tasks.value = [
-    { id: 1, taskTitle: 'Faire les courses', done: false },
-    { id: 2, taskTitle: 'Faire les devoirs', done: true },
-    { id: 3, taskTitle: 'Nettoyer la voiture', done: false }
-  ]
+  try {
+    await loadTasks()
+  } catch (e) {
+    status.value = 'tâches indisponibles'
+  }
 })
 </script>
 
@@ -73,10 +103,10 @@ onMounted(async () => {
           <tbody>
             <tr v-for="task in tasks" :key="task.id">
               <!--<td>{{ task.id }}</td> -->
-              <td>{{ task.taskTitle }}</td>
+              <td>{{ task.title }}</td>
               <td>{{ task.done ? '✅ Fait' : '❌ Pas encore' }}</td>
               <td>
-                <button @click="toggleDone(task.id)">
+                <button @click="toggleDone(task)">
                   {{ task.done ? 'Non fait' : 'Fait' }}
                 </button>
               </td>
