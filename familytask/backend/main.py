@@ -1,7 +1,9 @@
 import hashlib
+import secrets
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlmodel import SQLModel, Session, Field, create_engine, select
 
 DATABASE_URL = "postgresql://familytask:familytask@db:5432/familytask"
@@ -9,6 +11,13 @@ DATABASE_URL = "postgresql://familytask:familytask@db:5432/familytask"
 
 def hash_password(pw: str) -> str:
     return hashlib.sha256(pw.encode("utf-8")).hexdigest()
+
+
+def new_session_token(previous_token: str | None = None) -> str:
+    token = secrets.token_urlsafe(32)
+    while token == previous_token:
+        token = secrets.token_urlsafe(32)
+    return token
 
 
 engine = create_engine(DATABASE_URL, echo=True)
@@ -54,13 +63,17 @@ class MemberRead(SQLModel):
     name: str
     is_admin: bool
     family_code: str
-    token: str | None = None
+
+
+class AuthResponse(MemberRead):
+    token: str
 
 SQLModel.metadata.create_all(engine)
 
 
 app = FastAPI(title="FamilyTask")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+bearer_scheme = HTTPBearer(auto_error=False)
 
 @app.get("/api/tasks", response_model=list[Task])
 def get_tasks():
@@ -105,13 +118,29 @@ def health():
     return {"status": "ok"}
 
 
-@app.get("/api/members", response_model=list[MemberRead])
-def get_members():
+def current_member(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+) -> Member:
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    token = credentials.credentials
+
     with Session(engine) as session:
-        return session.exec(select(Member)).all()
+        member = session.exec(select(Member).where(Member.token == token)).first()
+        if not member:
+            raise HTTPException(status_code=401, detail="Invalid or expired token")
+        return member
 
 
-@app.post("/api/members", response_model=MemberRead, status_code=201)
+@app.get("/api/members", response_model=list[MemberRead])
+def get_members(current: Member = Depends(current_member)):
+    with Session(engine) as session:
+        return session.exec(
+            select(Member).where(Member.family_code == current.family_code)
+        ).all()
+
+
+@app.post("/api/members/signup", response_model=AuthResponse, status_code=201)
 def create_member(member: MemberCreate):
     with Session(engine) as session:
         existing_member = session.exec(
@@ -127,9 +156,46 @@ def create_member(member: MemberCreate):
             is_admin=member.is_admin,
             family_code=member.family_code,
             password_hash=hash_password(member.password),
+            token=new_session_token(),
         )
+        session.add(db_member)
+        session.commit()
+        session.refresh(db_member)
+        return db_member        
+
+@app.post("/api/members/login", response_model=AuthResponse)
+def login_member(email: str, password: str):
+    with Session(engine) as session:
+        db_member = session.exec(
+            select(Member).where(Member.email == email)
+        ).first()
+        if not db_member or db_member.password_hash != hash_password(password):
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+        db_member.token = new_session_token(db_member.token)
         session.add(db_member)
         session.commit()
         session.refresh(db_member)
         return db_member
 
+@app.get("/api/members/me", response_model=MemberRead)
+def get_current_member(current: Member = Depends(current_member)):
+    return current
+
+
+@app.post("/api/logout")
+def logout(current: Member = Depends(current_member)):
+    with Session(engine) as session:
+        member = session.get(Member, current.id)
+        member.token = None
+        session.add(member)
+        session.commit()
+    return {"ok": True, "message": "Successfully logged out"}
+
+
+@app.get("/api/members/{member_id}", response_model=MemberRead)
+def get_member(member_id: int, current: Member = Depends(current_member)):
+    with Session(engine) as session:
+        db_member = session.get(Member, member_id)
+        if not db_member or db_member.family_code != current.family_code:
+            raise HTTPException(status_code=404, detail="Member not found")
+        return db_member
