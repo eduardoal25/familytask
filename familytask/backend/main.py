@@ -1,12 +1,14 @@
 import hashlib
+import os
 import secrets
 
+import httpx
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlmodel import SQLModel, Session, Field, create_engine, select, text
 
-DATABASE_URL = "postgresql://familytask:familytask@db:5432/familytask"
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://familytask:familytask@db:5432/familytask")
 
 
 def hash_password(pw: str) -> str:
@@ -94,6 +96,14 @@ class AuthResponse(MemberRead):
 
 def ensure_task_member_column() -> None:
     with Session(engine) as session:
+        if str(engine.url).startswith("sqlite"):
+            result = session.exec(text("PRAGMA table_info(tasks)"))
+            columns = [row[1] for row in result.all()]
+            if "member_id" not in columns:
+                session.exec(text("ALTER TABLE tasks ADD COLUMN member_id INTEGER"))
+            session.commit()
+            return
+
         session.exec(text('ALTER TABLE tasks ADD COLUMN IF NOT EXISTS member_id INTEGER'))
         session.commit()
 
@@ -392,3 +402,42 @@ def delete_member(member_id: int, current: Member = Depends(current_member)):
         session.commit()
 
     return {"ok": True, "message": "Member deleted successfully"}
+
+AI_URL = (os.getenv("AI_URL") or "https://models.github.ai/inference/chat/completions").rstrip("/")
+#if AI_URL.endswith("/chat/completions"):
+#    AI_URL = AI_URL.removesuffix("/chat/completions")
+AI_MODEL = os.getenv("AI_MODEL", "openai/gpt-4.o-mini")
+AI_TOKEN = os.getenv("AI_TOKEN", "")
+
+
+@app.post("/api/assistant")
+async def assistant(message: str, current: Member = Depends(current_member)):
+    if not AI_TOKEN:
+        raise HTTPException(status_code=500, detail="AI_TOKEN is not configured")
+
+    payload = {
+        "model": AI_MODEL,
+        "messages": [{"role": "user", "content": message}],
+        "temperature": 0.7,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{AI_URL}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {AI_TOKEN}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            )
+            response.raise_for_status()
+            data = response.json()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"GitHub Models request failed: {exc}") from exc
+
+    reply = ((data.get("choices") or [{}])[0].get("message", {}) or {}).get("content")
+    if reply is None:
+        raise HTTPException(status_code=502, detail="GitHub Models response is missing content")
+
+    return {"reply": reply}
