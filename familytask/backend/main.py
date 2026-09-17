@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import secrets
 
@@ -403,11 +404,64 @@ def delete_member(member_id: int, current: Member = Depends(current_member)):
 
     return {"ok": True, "message": "Member deleted successfully"}
 
-AI_URL = (os.getenv("AI_URL") or "https://models.github.ai/inference/chat/completions").rstrip("/")
-#if AI_URL.endswith("/chat/completions"):
-#    AI_URL = AI_URL.removesuffix("/chat/completions")
-AI_MODEL = os.getenv("AI_MODEL", "openai/gpt-4.o-mini")
+AI_URL = (os.getenv("AI_URL") or "https://models.github.ai/inference").rstrip("/")
+if AI_URL.endswith("/chat/completions"):
+    AI_URL = AI_URL.removesuffix("/chat/completions")
+AI_MODEL = os.getenv("AI_MODEL", "openai/gpt-4o-mini")
 AI_TOKEN = os.getenv("AI_TOKEN", "")
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "ajouter_tache",
+            "description": "Ajoute une tâche à la liste d'un membre de la famille.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "titre": {"type": "string", "description": "Le titre de la tâche."},
+                    "personne": {"type": "string", "description": "Le prénom ou le lien de la personne concernée."},
+                },
+                "required": ["titre", "personne"],
+            },
+        },
+    }
+]
+
+
+def resolve_member_for_task(current: Member, member_hint: str | None, session: Session) -> Member:
+    normalized = (member_hint or "").strip()
+    if not normalized:
+        return current
+
+    members = session.exec(select(Member).where(Member.family_code == current.family_code)).all()
+    for member in members:
+        if member.name.lower() == normalized.lower():
+            return member
+        if member.lien.lower() == normalized.lower():
+            return member
+        if member.lien.lower().rstrip("s") == normalized.lower().rstrip("s"):
+            return member
+    return current
+
+
+def detect_ambiguous_link_in_message(message: str, current: Member, session: Session) -> str | None:
+    if not message:
+        return None
+
+    members = session.exec(select(Member).where(Member.family_code == current.family_code)).all()
+    lowered = message.lower()
+
+    for member in members:
+        if not member.lien:
+            continue
+        link = member.lien.lower().strip()
+        base = link.rstrip("s")
+        if link in lowered or base in lowered or (base + "s") in lowered:
+            matches = [m for m in members if m.lien and m.lien.lower() == link]
+            if len(matches) > 1:
+                names = ", ".join(m.name for m in matches)
+                return f"Il y a plusieurs {link}s ({names}). Pour qui ?"
+    return None
 
 
 @app.post("/api/assistant")
@@ -415,9 +469,16 @@ async def assistant(message: str, current: Member = Depends(current_member)):
     if not AI_TOKEN:
         raise HTTPException(status_code=500, detail="AI_TOKEN is not configured")
 
+    with Session(engine) as session:
+        ambiguous = detect_ambiguous_link_in_message(message, current, session)
+        if ambiguous:
+            return {"reply": ambiguous}
+
     payload = {
         "model": AI_MODEL,
         "messages": [{"role": "user", "content": message}],
+        "tools": TOOLS,
+        "tool_choice": "auto",
         "temperature": 0.7,
     }
 
@@ -436,8 +497,33 @@ async def assistant(message: str, current: Member = Depends(current_member)):
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"GitHub Models request failed: {exc}") from exc
 
-    reply = ((data.get("choices") or [{}])[0].get("message", {}) or {}).get("content")
+    response_msg = (data.get("choices") or [{}])[0].get("message", {}) or {}
+    tool_calls = response_msg.get("tool_calls") or []
+    if tool_calls:
+        with Session(engine) as session:
+            for call in tool_calls:
+                function = call.get("function", {}) or {}
+                name = function.get("name")
+                raw_args = function.get("arguments", {})
+                if isinstance(raw_args, str):
+                    try:
+                        arguments = json.loads(raw_args)
+                    except json.JSONDecodeError:
+                        arguments = {}
+                else:
+                    arguments = raw_args or {}
+
+                if name == "ajouter_tache":
+                    titre = arguments.get("titre") or "Nouvelle tâche"
+                    personne = arguments.get("personne") or current.name
+                    target = resolve_member_for_task(current, personne, session)
+                    db_task = Task(title=titre, done=False, member_id=target.id)
+                    session.add(db_task)
+                    session.commit()
+                    session.refresh(db_task)
+                    return {"reply": f"Tâche ajoutée pour {target.name} : {db_task.title}"}
+
+    reply = response_msg.get("content")
     if reply is None:
         raise HTTPException(status_code=502, detail="GitHub Models response is missing content")
-
     return {"reply": reply}
