@@ -2,6 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import Login from './views/Login.vue'
 import Signup from './views/Signup.vue'
 import TasksView from './views/TasksView.vue'
+import FamilyView from './views/FamilyView.vue'
 
 const routes = [
   { path: '/', redirect: '/login' },
@@ -10,6 +11,11 @@ const routes = [
   {
     path: '/tasks',
     component: TasksView,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/famille',
+    component: FamilyView,
     meta: { requiresAuth: true }
   }
 ]

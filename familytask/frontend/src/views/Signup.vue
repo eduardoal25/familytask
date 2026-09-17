@@ -28,7 +28,7 @@ async function submit() {
         email: email.value.trim(),
         lien: lien.value,
         name: name.value.trim(),
-        is_admin: true,
+        is_admin: false,
         family_code: familyName.value.trim(),
         password: password.value
       })
