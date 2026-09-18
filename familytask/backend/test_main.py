@@ -45,9 +45,11 @@ def test_assistant_calls_github_models_with_token(monkeypatch):
         token = signup.json()["token"]
         headers = {"Authorization": f"Bearer {token}"}
 
+        expected_token = os.environ.get("AI_TOKEN", "")
+
         async def fake_post(self, url, headers=None, json=None):
             assert url == "https://models.github.ai/inference/chat/completions"
-            assert headers["Authorization"] == "Bearer test-ai-token"
+            assert headers["Authorization"] == f"Bearer {expected_token}"
             assert headers["Content-Type"] == "application/json"
             assert json["model"] == "openai/gpt-4o-mini"
             assert json["messages"][-1]["content"] == "Bonjour"
@@ -106,6 +108,114 @@ def test_assistant_executes_tool_call(monkeypatch):
         assert any(task["title"] == "Faire les courses" for task in tasks.json())
 
 
+def test_assistant_restricts_non_admin_to_self(monkeypatch):
+    with TestClient(app) as client:
+        client.post(
+            "/api/members/signup",
+            json={
+                "email": "papa@fam.fr",
+                "lien": "papa",
+                "name": "Papa",
+                "is_admin": False,
+                "family_code": "famille-self-only",
+                "password": "secret",
+            },
+        )
+        client.post(
+            "/api/members/signup",
+            json={
+                "email": "maman@fam.fr",
+                "lien": "maman",
+                "name": "Maman",
+                "is_admin": False,
+                "family_code": "famille-self-only",
+                "password": "secret",
+            },
+        )
+
+        login = client.post("/api/members/login", params={"email": "papa@fam.fr", "password": "secret"})
+        token = login.json()["token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        async def fake_post(self, url, headers=None, json=None):
+            return DummyResponse({
+                "choices": [{
+                    "message": {
+                        "tool_calls": [{
+                            "id": "call_1",
+                            "function": {
+                                "name": "ajouter_tache",
+                                "arguments": '{"titre": "Faire les courses", "personne": "Maman"}'
+                            }
+                        }]
+                    }
+                }]
+            })
+
+        monkeypatch.setattr("httpx.AsyncClient.post", fake_post)
+
+        response = client.post("/api/assistant", params={"message": "Ajoute une tâche pour Maman"}, headers=headers)
+        assert response.status_code == 200
+        assert "Tu ne peux attribuer une tâche qu’à toi" in response.json()["reply"]
+        tasks = client.get("/api/tasks", headers=headers)
+        assert tasks.status_code == 200
+        assert tasks.json() == []
+
+
+def test_assistant_allows_admin_to_assign_other_member(monkeypatch):
+    with TestClient(app) as client:
+        client.post(
+            "/api/members/signup",
+            json={
+                "email": "admin@fam.fr",
+                "lien": "parent",
+                "name": "Parent",
+                "is_admin": True,
+                "family_code": "famille-admin-assign",
+                "password": "secret",
+            },
+        )
+        client.post(
+            "/api/members/signup",
+            json={
+                "email": "enfant@fam.fr",
+                "lien": "enfant",
+                "name": "Enfant",
+                "is_admin": False,
+                "family_code": "famille-admin-assign",
+                "password": "secret",
+            },
+        )
+
+        login = client.post("/api/members/login", params={"email": "admin@fam.fr", "password": "secret"})
+        token = login.json()["token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        async def fake_post(self, url, headers=None, json=None):
+            return DummyResponse({
+                "choices": [{
+                    "message": {
+                        "tool_calls": [{
+                            "id": "call_1",
+                            "function": {
+                                "name": "ajouter_tache",
+                                "arguments": '{"titre": "Ranger le salon", "personne": "Enfant"}'
+                            }
+                        }]
+                    }
+                }]
+            })
+
+        monkeypatch.setattr("httpx.AsyncClient.post", fake_post)
+
+        response = client.post("/api/assistant", params={"message": "Ajoute une tâche pour Enfant"}, headers=headers)
+        assert response.status_code == 200
+        assert response.json()["reply"].startswith("Tâche ajoutée pour Enfant")
+        tasks = client.get("/api/tasks/famille", headers=headers)
+        assert tasks.status_code == 200
+        assert any(task["title"] == "Ranger le salon" for task in tasks.json())
+
+
 def test_assistant_asks_for_clarification_on_ambiguous_link():
     with TestClient(app) as client:
         family = "famille-ambigu"
@@ -138,4 +248,4 @@ def test_assistant_asks_for_clarification_on_ambiguous_link():
 
         response = client.post("/api/assistant", params={"message": "Ajoute une tâche pour ma fille"}, headers=headers)
         assert response.status_code == 200
-        assert "Il y a plusieurs filles (Léa, Emma). Pour qui ?" in response.json()["reply"]
+        assert "Il y a plusieurs filles (Léa (fille), Emma (fille)). Pour qui ?" in response.json()["reply"]

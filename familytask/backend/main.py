@@ -428,23 +428,67 @@ TOOLS = [
 ]
 
 
+def normalize_member_hint(value: str | None) -> str:
+    return (value or "").strip().lower().strip("'\"")
+
+
+def is_self_reference(current: Member, member_hint: str | None) -> bool:
+    hint = normalize_member_hint(member_hint)
+    if not hint:
+        return True
+
+    self_tokens = {
+        "moi",
+        "moi-meme",
+        "moi-même",
+        "moi meme",
+        "moi-meme",
+        "myself",
+        "me",
+        "je",
+        current.name.lower().strip() if current.name else "",
+        current.lien.lower().strip() if current.lien else "",
+        (current.lien.lower().strip() if current.lien else "").rstrip("s"),
+    }
+    return hint in self_tokens or hint.rstrip("s") in self_tokens
+
+
 def resolve_member_for_task(current: Member, member_hint: str | None, session: Session) -> Member:
-    normalized = (member_hint or "").strip()
-    if not normalized:
+    candidates = resolve_member_candidates(current, member_hint, session)
+    if not candidates:
         return current
+    return candidates[0]
 
+
+def resolve_member_candidates(current: Member, member_hint: str | None, session: Session) -> list[Member]:
+    hint = (member_hint or "").strip()
+    if not hint:
+        return []
+
+    normalized = hint.lower()
     members = session.exec(select(Member).where(Member.family_code == current.family_code)).all()
+    matches: list[Member] = []
+
     for member in members:
-        if member.name.lower() == normalized.lower():
-            return member
-        if member.lien.lower() == normalized.lower():
-            return member
-        if member.lien.lower().rstrip("s") == normalized.lower().rstrip("s"):
-            return member
-    return current
+        if member.name and member.name.lower() == normalized:
+            matches.append(member)
+        if member.lien and member.lien.lower() == normalized:
+            matches.append(member)
+        if member.lien and member.lien.lower().rstrip("s") == normalized.rstrip("s"):
+            matches.append(member)
+
+    unique: list[Member] = []
+    seen: set[int] = set()
+    for member in matches:
+        if member.id is not None and member.id in seen:
+            continue
+        if member.id is not None:
+            seen.add(member.id)
+        unique.append(member)
+    return unique
 
 
-def detect_ambiguous_link_in_message(message: str, current: Member, session: Session) -> str | None:
+def detect_ambiguous_member_in_message(message: str, current: Member, session: Session) -> str | None:
     if not message:
         return None
 
@@ -452,6 +496,12 @@ def detect_ambiguous_link_in_message(message: str, current: Member, session: Ses
     lowered = message.lower()
 
     for member in members:
+        if member.name and member.name.lower() in lowered:
+            matches = [m for m in members if m.name and m.name.lower() == member.name.lower()]
+            if len(matches) > 1:
+                names = ", ".join(f"{m.name} ({m.lien})" if m.lien else m.name for m in matches)
+                return f"Il y a plusieurs personnes appelées {member.name} ({names}). Pour qui ?"
+
         if not member.lien:
             continue
         link = member.lien.lower().strip()
@@ -459,7 +509,7 @@ def detect_ambiguous_link_in_message(message: str, current: Member, session: Ses
         if link in lowered or base in lowered or (base + "s") in lowered:
             matches = [m for m in members if m.lien and m.lien.lower() == link]
             if len(matches) > 1:
-                names = ", ".join(m.name for m in matches)
+                names = ", ".join(f"{m.name} ({m.lien})" if m.lien else m.name for m in matches)
                 return f"Il y a plusieurs {link}s ({names}). Pour qui ?"
     return None
 
@@ -470,7 +520,7 @@ async def assistant(message: str, current: Member = Depends(current_member)):
         raise HTTPException(status_code=500, detail="AI_TOKEN is not configured")
 
     with Session(engine) as session:
-        ambiguous = detect_ambiguous_link_in_message(message, current, session)
+        ambiguous = detect_ambiguous_member_in_message(message, current, session)
         if ambiguous:
             return {"reply": ambiguous}
 
@@ -516,7 +566,25 @@ async def assistant(message: str, current: Member = Depends(current_member)):
                 if name == "ajouter_tache":
                     titre = arguments.get("titre") or "Nouvelle tâche"
                     personne = arguments.get("personne") or current.name
-                    target = resolve_member_for_task(current, personne, session)
+
+                    if not current.is_admin and not is_self_reference(current, personne):
+                        return {"reply": "Tu ne peux attribuer une tâche qu’à toi. Demande à l’assistant de créer une tâche pour toi."}
+
+                    candidates = resolve_member_candidates(current, personne, session)
+                    if len(candidates) == 0:
+                        return {"reply": f"Je ne trouve personne correspondant à « {personne} » dans la famille."}
+
+                    if len(candidates) > 1:
+                        noms = ", ".join(f"{m.name} ({m.lien})" if m.lien else m.name for m in candidates)
+                        if all(m.lien for m in candidates):
+                            label = candidates[0].lien
+                            return {"reply": f"Il y a plusieurs {label}s ({noms}). Pour qui ?"}
+                        return {"reply": f"Il y a plusieurs personnes possibles ({noms}). Pour qui ?"}
+
+                    target = candidates[0]
+                    if not current.is_admin and target.id != current.id:
+                        return {"reply": "Tu ne peux attribuer une tâche qu’à toi. Demande à l’assistant de créer une tâche pour toi."}
+
                     db_task = Task(title=titre, done=False, member_id=target.id)
                     session.add(db_task)
                     session.commit()

@@ -1,5 +1,6 @@
 <script setup>
 import { ref, onMounted } from 'vue'
+import ChatAssistant from '../components/ChatAssistant.vue'
 
 const newTask = ref('')
 const tasks = ref([])
@@ -8,6 +9,7 @@ const status = ref('...')
 const memberName = ref('')
 const isAdmin = ref(false)
 const selectedMemberId = ref('')
+const isAssistantOpen = ref(false)
 
 async function loadCurrentMember() {
   const token = localStorage.getItem('token')
@@ -180,10 +182,14 @@ onMounted(async () => {
     status.value = 'tâches indisponibles'
   }
 })
+
+async function refreshFromAssistant() {
+  await loadTasks()
+}
 </script>
 
 <template>
-  <main>
+  <main class="tasks-page">
     <header class="topbar">
       <h1 class="brand-title" @click="$router.push('/famille')" role="button" tabindex="0" @keydown.enter="$router.push('/famille')" @keydown.space.prevent="$router.push('/famille')">🏠 FamilyTask</h1>
       <div class="user-bar">
@@ -191,6 +197,20 @@ onMounted(async () => {
         <button class="ghost" @click="logout">Se déconnecter</button>
       </div>
     </header>
+
+    <button class="assistant-fab" @click="isAssistantOpen = true" aria-label="Ouvrir l’assistant">
+      🤖
+    </button>
+
+    <div v-if="isAssistantOpen" class="assistant-overlay" @click.self="isAssistantOpen = false">
+      <div class="assistant-panel">
+        <div class="assistant-panel-header">
+          <span>Assistant</span>
+          <button class="close-btn" @click="isAssistantOpen = false" aria-label="Fermer">✕</button>
+        </div>
+        <ChatAssistant @refresh-tasks="refreshFromAssistant" />
+      </div>
+    </div>
 
     <div class="card">
       <p class="hint">Status: {{ status }}</p>
@@ -237,10 +257,31 @@ onMounted(async () => {
         </table>
       </div>
     </div>
+    <nav class="bottom-nav">
+      <router-link to="/tasks" class="nav-item" active-class="active">
+        <span>✓</span>
+        <span>Tâches</span>
+      </router-link>
+      <router-link to="/assistant" class="nav-item" active-class="active">
+        <span>🤖</span>
+        <span>Assistant</span>
+      </router-link>
+      <router-link v-if="isAdmin" to="/famille" class="nav-item" active-class="active">
+        <span>👥</span>
+        <span>Famille</span>
+      </router-link>
+    </nav>
   </main>
 </template>
 
 <style scoped>
+.tasks-page {
+  min-height: 100vh;
+  background: #0b0f13;
+  color: #F5F5F5;
+  padding-bottom: 88px;
+}
+
 .brand-title {
   cursor: pointer;
   user-select: none;
@@ -251,5 +292,91 @@ onMounted(async () => {
 .brand-title:focus {
   opacity: 0.85;
   outline: none;
+}
+
+.assistant-fab {
+  position: fixed;
+  right: 18px;
+  bottom: 82px;
+  z-index: 15;
+  border: none;
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #2563eb, #1d4ed8);
+  color: #F5F5F5;
+  box-shadow: 0 18px 35px rgba(37, 99, 235, 0.38);
+  font-size: 1.5rem;
+  cursor: pointer;
+}
+
+.assistant-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: rgba(2, 6, 23, 0.48);
+  padding: 18px;
+}
+
+.assistant-panel {
+  width: min(100%, 440px);
+  height: min(78vh, 560px);
+  background: rgba(11, 15, 19, 0.98);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 22px 22px 18px 18px;
+  overflow: hidden;
+  box-shadow: 0 18px 38px rgba(15, 23, 42, 0.35);
+}
+
+.assistant-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(17, 24, 39, 0.9);
+  color: #F5F5F5;
+  font-weight: 700;
+}
+
+.close-btn {
+  border: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  background: rgba(148, 163, 184, 0.12);
+  color: #F5F5F5;
+  cursor: pointer;
+}
+
+.bottom-nav {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  background: rgba(11, 15, 19, 0.98);
+  border-top: 1px solid rgba(148, 163, 184, 0.18);
+  backdrop-filter: blur(10px);
+}
+
+.nav-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 10px 12px;
+  color: #cbd5e1;
+  text-decoration: none;
+  font-size: 0.72rem;
+}
+
+.nav-item.active {
+  color: #dbeafe;
+  background: rgba(37, 99, 235, 0.14);
 }
 </style>

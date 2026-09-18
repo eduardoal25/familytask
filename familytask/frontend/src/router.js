@@ -3,6 +3,7 @@ import Login from './views/Login.vue'
 import Signup from './views/Signup.vue'
 import TasksView from './views/TasksView.vue'
 import FamilyView from './views/FamilyView.vue'
+import ChatAssistantView from './components/ChatAssistant.vue'
 
 const routes = [
   { path: '/', redirect: '/login' },
@@ -16,6 +17,11 @@ const routes = [
   {
     path: '/famille',
     component: FamilyView,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/assistant',
+    component: ChatAssistantView,
     meta: { requiresAuth: true }
   }
 ]

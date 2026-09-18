@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuth } from '../composables/useAuth.js'
+import ChatAssistant from '../components/ChatAssistant.vue'
 
 const router = useRouter()
 const { user, isAdmin, refreshUser } = useAuth()
@@ -23,6 +24,7 @@ const newMember = ref({
 })
 
 const currentMemberId = computed(() => Number(user.value?.id ?? 0))
+const isAssistantOpen = ref(false)
 
 function getAuthHeaders() {
   const token = localStorage.getItem('token') || ''
@@ -225,12 +227,17 @@ onMounted(async () => {
 
   await refreshUser()
   if (!isAdmin.value) {
-    router.push('/taches')
+    router.push('/tasks')
     return
   }
 
   await loadFamilyData()
 })
+
+async function refreshAssistantData() {
+  await loadTasks()
+  await loadFamilyData()
+}
 
 function initials(name = 'M') {
   return name
@@ -245,10 +252,24 @@ function initials(name = 'M') {
 <template>
   <div class="family-page">
     <header class="family-header">
-      <button class="icon-btn back-btn" @click="router.push('/taches')" aria-label="Retour">←</button>
+      <button class="icon-btn back-btn" @click="router.push('/tasks')" aria-label="Retour">←</button>
       <h1>Famille</h1>
       <button class="icon-btn menu-btn" aria-label="Menu">⋯</button>
     </header>
+
+    <button class="assistant-fab" @click="isAssistantOpen = true" aria-label="Ouvrir l’assistant">
+      🤖
+    </button>
+
+    <div v-if="isAssistantOpen" class="assistant-overlay" @click.self="isAssistantOpen = false">
+      <div class="assistant-panel">
+        <div class="assistant-panel-header">
+          <span>Assistant</span>
+          <button class="close-btn" @click="isAssistantOpen = false" aria-label="Fermer">✕</button>
+        </div>
+        <ChatAssistant @refresh-tasks="refreshAssistantData" />
+      </div>
+    </div>
 
     <main class="family-content">
       <section class="panel">
@@ -335,9 +356,13 @@ function initials(name = 'M') {
     </main>
 
     <nav class="bottom-nav">
-      <router-link to="/taches" class="nav-item" active-class="active">
+      <router-link to="/tasks" class="nav-item" active-class="active">
         <span>✓</span>
         <span>Tâches</span>
+      </router-link>
+      <router-link to="/assistant" class="nav-item" active-class="active">
+        <span>🤖</span>
+        <span>Assistant</span>
       </router-link>
       <router-link v-if="isAdmin" to="/famille" class="nav-item" active-class="active">
         <span>👥</span>
@@ -352,8 +377,8 @@ function initials(name = 'M') {
   --bg: #0b0f13;
   --panel: #111827;
   --panel-2: #171f2c;
-  --text: #ffffff;
-  --text-secondary: #9ca3af;
+  --text: #F5F5F5;
+  --text-secondary: #F5F5F5;
   --divider: rgba(148, 163, 184, 0.18);
   --admin-badge: #2563eb;
   --blue-soft: #1d4ed8;
@@ -639,13 +664,71 @@ select {
   font-size: 0.8rem;
 }
 
+.assistant-fab {
+  position: fixed;
+  right: 18px;
+  bottom: 82px;
+  z-index: 15;
+  border: none;
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #2563eb, #1d4ed8);
+  color: #F5F5F5;
+  box-shadow: 0 18px 35px rgba(37, 99, 235, 0.38);
+  font-size: 1.5rem;
+  cursor: pointer;
+}
+
+.assistant-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: rgba(2, 6, 23, 0.48);
+  padding: 18px;
+}
+
+.assistant-panel {
+  width: min(100%, 440px);
+  height: min(78vh, 560px);
+  background: rgba(11, 15, 19, 0.98);
+  border: 1px solid var(--divider);
+  border-radius: 22px 22px 18px 18px;
+  overflow: hidden;
+  box-shadow: 0 18px 38px rgba(15, 23, 42, 0.35);
+}
+
+.assistant-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--divider);
+  background: rgba(17, 24, 39, 0.9);
+  color: var(--text);
+  font-weight: 700;
+}
+
+.close-btn {
+  border: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  background: rgba(148, 163, 184, 0.12);
+  color: var(--text);
+  cursor: pointer;
+}
+
 .bottom-nav {
   position: fixed;
   left: 0;
   right: 0;
   bottom: 0;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   background: rgba(11, 15, 19, 0.98);
   border-top: 1px solid var(--divider);
   backdrop-filter: blur(10px);
