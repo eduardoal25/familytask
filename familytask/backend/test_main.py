@@ -7,7 +7,7 @@ os.environ.setdefault("DATABASE_URL", "sqlite:///./test.db")
 os.environ.setdefault("AI_TOKEN", "test-ai-token")
 
 from fastapi.testclient import TestClient
-
+from pytest import monkeypatch
 from main import app
 
 
@@ -249,3 +249,35 @@ def test_assistant_asks_for_clarification_on_ambiguous_link():
         response = client.post("/api/assistant", params={"message": "Ajoute une tâche pour ma fille"}, headers=headers)
         assert response.status_code == 200
         assert "Il y a plusieurs filles (Léa (fille), Emma (fille)). Pour qui ?" in response.json()["reply"]
+
+
+def test_family_ngaimoco_adds_task_for_sozinho():
+    with TestClient(app) as client:
+        signup = client.post(
+            "/api/members/signup",
+            json={
+                "email": "sozinho@ngaimoco.fr",
+                "lien": "Grand-père",
+                "name": "Sozinho",
+                "is_admin": True,
+                "family_code": "Ngaimoco",
+                "password": "secret",
+            },
+        )
+        assert signup.status_code == 201, signup.text
+
+        token = signup.json()["token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        response = client.post(
+            "/api/tasks",
+            json={"title": "regarder un film", "done": False},
+            headers=headers,
+        )
+
+        assert response.status_code == 200, response.text
+        assert any(task["title"] == "regarder un film" for task in response.json())
+
+        tasks = client.get("/api/tasks", headers=headers)
+        assert tasks.status_code == 200
+        assert any(task["title"] == "regarder un film" for task in tasks.json())
